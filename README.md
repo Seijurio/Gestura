@@ -12,6 +12,7 @@ Glisse la main pour changer d'effet, fais 🖖 pour une photo, joue à des mini-
 ![MediaPipe](https://img.shields.io/badge/MediaPipe-Tasks-00A98F)
 ![OpenCV](https://img.shields.io/badge/OpenCV-5-5C3EE8?logo=opencv&logoColor=white)
 ![60 fps](https://img.shields.io/badge/affichage-60%20i%2Fs-brightgreen)
+![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)
 
 </div>
 
@@ -137,7 +138,7 @@ Et aussi : le **dessin néon** dans l'air (`D`). L'index tendu dessine, la main 
 
 ## Arcade
 
-`J` ouvre la salle d'arcade. Tu choisis un jeu en le pointant de l'index (0,8 s) ou avec les touches `1`–`5`.
+`J` ouvre la salle d'arcade : une rangée de grandes cartes colorées. Pointe une carte de l'index (0,8 s, une barre se remplit) ou utilise les touches `1`–`5` et les flèches.
 
 | Jeu | Principe |
 |---|---|
@@ -239,4 +240,4 @@ Les seuils des gestes sont en haut de `gestures.py` (`SWIPE_*`, `HOLD_TIME`).
 
 ## Licence
 
-À définir. Ajoute un fichier `LICENSE` (par exemple MIT) avant de rendre le dépôt public.
+[MIT](LICENSE) : libre d'utiliser, modifier et redistribuer, en gardant la mention de copyright.

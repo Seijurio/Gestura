@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 import icons
 import ui
@@ -153,8 +154,12 @@ _disp = {"t": 0.0, "size": None}
 
 
 def for_display(frame):
-    """Agrandit nous-mêmes l'image à la taille réelle de la fenêtre (écran Retina = 2 pixels par point),
-    en bicubique, plutôt que de laisser macOS l'étirer (flou / pixelisé)."""
+    """Prépare l'image EXACTEMENT au format de la zone d'affichage de la fenêtre.
+
+    macOS dessine l'image en partant du bas de la fenêtre : si son format ne colle pas pile à celui de la
+    fenêtre (plein écran sur un écran à encoche, fenêtre redimensionnée…), il reste une bande grise en haut.
+    On compose donc nous-mêmes une image à la taille réelle de la fenêtre (Retina = 2 pixels par point) :
+    l'image est centrée, agrandie en bicubique, avec des marges noires si les formats diffèrent."""
     now = time.monotonic()
     if now - _disp["t"] > 0.5:
         _disp["t"] = now
@@ -163,13 +168,22 @@ def for_display(frame):
             _disp["size"] = (ww * 2, wh * 2) if ww > 0 and wh > 0 else None
         except cv2.error:
             _disp["size"] = None
-    h, w = frame.shape[:2]
     if _disp["size"] is None:
         return frame
-    dw = min(_disp["size"][0], int(w * 1.6))
-    if dw <= w * 1.05:
-        return frame
-    return cv2.resize(frame, (dw, int(dw * h / w)), interpolation=cv2.INTER_CUBIC)
+    tw, th = _disp["size"]
+    if tw > 3840:  # au-delà, inutile (et coûteux) : macOS agrandira l'image entière, au bon format
+        th, tw = int(th * 3840 / tw), 3840
+    h, w = frame.shape[:2]
+    s = min(tw / w, th / h)
+    nw, nh = max(1, int(round(w * s))), max(1, int(round(h * s)))
+    interp = cv2.INTER_CUBIC if s > 1 else cv2.INTER_LINEAR
+    img = frame if (nw, nh) == (w, h) else cv2.resize(frame, (nw, nh), interpolation=interp)
+    if abs(nw - tw) <= 1 and abs(nh - th) <= 1:
+        return img
+    canvas = np.zeros((th, tw, 3), np.uint8)
+    x0, y0 = (tw - nw) // 2, (th - nh) // 2
+    canvas[y0:y0 + nh, x0:x0 + nw] = img[:th - y0, :tw - x0]
+    return canvas
 
 
 def fit_frame(frame, size):

@@ -80,6 +80,41 @@ class SliceGame(_Game):
                     out.append((k, p0, p1, sp))
         return out
 
+    def _scaled(self, i, cw, ch, s, sel):
+        """Carte + ombre à l'échelle s, mises en cache (l'animation ne recalcule que quelques tailles)."""
+        k = ("sc", i, cw, ch, s, sel, self.records.get(GAMES[i][0], 0))
+        if k not in self._cards:
+            card, a, shadow = self._card(i, cw, ch)
+            nw, nh = int(cw * s), int(ch * s)
+            img = cv2.resize(card, (nw, nh), interpolation=cv2.INTER_AREA)
+            al = cv2.resize(a, (nw, nh), interpolation=cv2.INTER_AREA)[..., None]
+            if not sel:
+                img = img * 0.72
+            sh_ = cv2.resize(shadow, (int(shadow.shape[1] * s), int(shadow.shape[0] * s)))[..., None]
+            col = _bgr(CARD_STYLE[GAMES[i][0]][0]) * 0.9 if sel else np.zeros(3, np.float32)
+            shd = (np.broadcast_to(col, sh_.shape[:2] + (3,)).astype(np.float32),
+                   (sh_ * (0.75 if sel else 0.55)).astype(np.float32))
+            if len(self._cards) > 300:
+                self._cards = {kk: v for kk, v in self._cards.items() if kk[0] != "sc"}
+            self._cards[k] = ((img.astype(np.float32), al.astype(np.float32)), shd)
+        return self._cards[k]
+
+    def _chip(self, txt):
+        k = ("chip", txt)
+        if k not in self._cards:
+            T = self.text
+            tw, _ = T.size(txt, 15, True)
+            hh = ui.u(34)
+            ww = tw + ui.u(28)
+            pm = (_rounded(ww, hh, hh // 2).astype(np.float32) / 255)[..., None]
+            img = np.full((hh, ww, 3), 255, np.uint8)
+            txt_l = np.zeros((hh, ww, 3), np.uint8)
+            T.draw(txt_l, txt, (ww // 2, hh // 2), 15, ui.WHITE, "mm", bold=True)
+            tl = txt_l[..., :1].astype(np.float32) / 255
+            alpha = np.maximum(pm * 0.16, tl * 0.92)
+            self._cards[k] = (img.astype(np.float32), alpha.astype(np.float32))
+        return self._cards[k]
+
     # ------------------------------------------------------------------ boucle
     def update(self, frame, tracker, dt):
         h, w = frame.shape[:2]
@@ -545,8 +580,33 @@ GAMES = [("danse", "Danse", "icon_danse", "Reproduis les poses en rythme", Dance
          ("jacques", "Jacques a dit", "icon_jacques", "Le bon geste… si Jacques l'a dit", SimonGame),
          ("esquive", "Esquive", "icon_esquive", "Évite les météores avec ta tête", DodgeGame)]
 
+# couleur de chaque jeu (RGB haut, RGB bas) et grand emoji de la carte
+CARD_STYLE = {
+    "danse": ((214, 72, 238), (104, 26, 140), "💃"),
+    "bulles": ((70, 196, 255), (22, 86, 196), "🫧"),
+    "tranche": ((112, 222, 112), (24, 120, 62), "🍉"),
+    "jacques": ((255, 166, 64), (214, 66, 46), "🙋"),
+    "esquive": ((104, 112, 255), (30, 24, 108), "☄️"),
+}
+DWELL = 0.8
+
+
+def _bgr(rgb):
+    return np.array(rgb[::-1], np.float32)
+
+
+def _rounded(w, h, r):
+    m = np.zeros((h, w), np.uint8)
+    cv2.rectangle(m, (r, 0), (w - r, h), 255, -1)
+    cv2.rectangle(m, (0, r), (w, h - r), 255, -1)
+    for cx, cy in ((r, r), (w - r - 1, r), (r, h - r - 1), (w - r - 1, h - r - 1)):
+        cv2.circle(m, (cx, cy), r, 255, -1, cv2.LINE_AA)
+    return m
+
 
 class Arcade:
+    """Salle d'arcade : rangée de grandes cartes colorées (style boutique de jeux sur console).
+    Pointe une carte avec l'index (0,8 s) pour lancer · touches 1-5 · ← → + Entrée."""
     needs_hands = True
     needs_face = needs_seg = needs_pose = False
 
@@ -556,7 +616,9 @@ class Arcade:
         self.hover = None
         self.hover_t = 0.0
         self.t0 = time.monotonic()
-        self.particles = ui.Particles()
+        self.scales = [1.0] * len(GAMES)
+        self.tint = _bgr(CARD_STYLE[GAMES[0][0]][0])
+        self._cards = {}
 
     def key(self, k):
         if k in (ESC, ord("q")):
@@ -571,58 +633,157 @@ class Arcade:
             return ("launch", self.sel)
         return None
 
+    # ------------------------------------------------------------------ cartes (mises en cache)
+    def _card(self, i, cw, ch):
+        key_, name, _, _, _ = GAMES[i]
+        rec = self.records.get(key_, 0)
+        ck = (i, cw, ch, rec)
+        if ck in self._cards:
+            return self._cards[ck]
+        top, bot, emo = CARD_STYLE[key_]
+        T = self.text
+        r = int(cw * 0.12)
+        yy = np.linspace(0, 1, ch, dtype=np.float32)[:, None, None]
+        rgb = _bgr(top) * (1 - yy) + _bgr(bot) * yy
+        rgb = np.repeat(rgb, cw, axis=1)
+        # reflet doux en haut à gauche
+        xx = np.linspace(0, 1, cw, dtype=np.float32)[None, :, None]
+        rgb += np.exp(-(((xx - 0.2) / 0.45) ** 2 + ((yy - 0.05) / 0.35) ** 2)) * 38
+        card = np.clip(rgb, 0, 255).astype(np.uint8)
+        # grand emoji (iOS)
+        ui.blit(card, icons.get(emo, int(cw * 0.62)), (cw * 0.5, ch * 0.4))
+        # titre + record, alignés à gauche en bas
+        pad = int(cw * 0.09)
+        T.draw(card, name, (pad, ch - pad - ui.u(58)), 26, ui.WHITE, "lb", bold=True)
+        pill = f"Record {rec:,}".replace(",", " ") if rec else "Nouveau"
+        tw, th = T.size(pill, 15, True)
+        px0, py0 = pad, ch - pad - ui.u(34)
+        sub = card[py0:py0 + th + ui.u(10), px0:px0 + tw + ui.u(22)]
+        pm = _rounded(sub.shape[1], sub.shape[0], sub.shape[0] // 2).astype(np.float32)[..., None] / 255
+        sub[:] = (sub * (1 - 0.22 * pm) + 255 * 0.22 * pm).astype(np.uint8)
+        T.draw(card, pill, (px0 + ui.u(11), py0 + ui.u(5)), 15, ui.WHITE, "lt", bold=True)
+        # numéro (raccourci clavier)
+        T.draw(card, str(i + 1), (cw - pad, pad), 16, ui.WHITE, "rt", bold=True, alpha=0.7)
+        m = _rounded(cw, ch, r)
+        a = (m.astype(np.float32) / 255)[..., None]
+        shadow = cv2.GaussianBlur(np.pad(m, ui.u(30)), (0, 0), ui.u(14)).astype(np.float32)[..., None] / 255
+        self._cards[ck] = (card.astype(np.float32), a, shadow)
+        return self._cards[ck]
+
+    def _scaled(self, i, cw, ch, s, sel):
+        """Carte + ombre à l'échelle s, mises en cache (l'animation ne recalcule que quelques tailles)."""
+        k = ("sc", i, cw, ch, s, sel, self.records.get(GAMES[i][0], 0))
+        if k not in self._cards:
+            card, a, shadow = self._card(i, cw, ch)
+            nw, nh = int(cw * s), int(ch * s)
+            img = cv2.resize(card, (nw, nh), interpolation=cv2.INTER_AREA)
+            al = cv2.resize(a, (nw, nh), interpolation=cv2.INTER_AREA)[..., None]
+            if not sel:
+                img = img * 0.72
+            sh_ = cv2.resize(shadow, (int(shadow.shape[1] * s), int(shadow.shape[0] * s)))[..., None]
+            col = _bgr(CARD_STYLE[GAMES[i][0]][0]) * 0.9 if sel else np.zeros(3, np.float32)
+            shd = (np.broadcast_to(col, sh_.shape[:2] + (3,)).astype(np.float32),
+                   (sh_ * (0.75 if sel else 0.55)).astype(np.float32))
+            if len(self._cards) > 300:
+                self._cards = {kk: v for kk, v in self._cards.items() if kk[0] != "sc"}
+            self._cards[k] = ((img.astype(np.float32), al.astype(np.float32)), shd)
+        return self._cards[k]
+
+    def _chip(self, txt):
+        k = ("chip", txt)
+        if k not in self._cards:
+            T = self.text
+            tw, _ = T.size(txt, 15, True)
+            hh = ui.u(34)
+            ww = tw + ui.u(28)
+            pm = (_rounded(ww, hh, hh // 2).astype(np.float32) / 255)[..., None]
+            img = np.full((hh, ww, 3), 255, np.uint8)
+            txt_l = np.zeros((hh, ww, 3), np.uint8)
+            T.draw(txt_l, txt, (ww // 2, hh // 2), 15, ui.WHITE, "mm", bold=True)
+            tl = txt_l[..., :1].astype(np.float32) / 255
+            alpha = np.maximum(pm * 0.16, tl * 0.92)
+            self._cards[k] = (img.astype(np.float32), alpha.astype(np.float32))
+        return self._cards[k]
+
+    # ------------------------------------------------------------------ boucle
     def update(self, frame, tracker, dt):
         h, w = frame.shape[:2]
         T = self.text
         now = time.monotonic()
-        frame[:] = cv2.convertScaleAbs(ui.soft_blur(frame, 16 * ui.S), alpha=0.45)
-        T.draw(frame, "ARCADE", (w // 2, ui.u(50)), 64, ui.WHITE, "mt", bold=True, stroke=3)
-        T.draw(frame, "Pointe un jeu avec ton index · ou touches 1-5 · ÉCHAP pour revenir aux effets",
-                   (w // 2, ui.u(130)), 20, ui.WHITE, "mt", alpha=0.8)
-        cw, ch = ui.u(205), ui.u(300)
-        gap = ui.u(22)
-        x0 = w // 2 - (len(GAMES) * cw + (len(GAMES) - 1) * gap) // 2
-        y0 = h // 2 - ch // 2 + ui.u(30)
+        # fond : caméra très floutée + assombrie, teintée par la couleur du jeu sélectionné
+        bg = cv2.convertScaleAbs(ui.soft_blur(frame, 26 * ui.S), alpha=0.42)
+        target = _bgr(CARD_STYLE[GAMES[self.sel][0]][0])
+        self.tint = self.tint + (target - self.tint) * (1 - math.exp(-6 * dt))
+        sw, sh = w // 8, h // 8
+        yy, xx = np.mgrid[0:sh, 0:sw].astype(np.float32)
+        glow = np.exp(-(((xx / sw - 0.5) / 0.55) ** 2 + ((yy / sh - 0.62) / 0.45) ** 2))
+        glow = np.clip((glow * 0.42)[..., None] * self.tint, 0, 255).astype(np.uint8)
+        frame[:] = cv2.add(bg, cv2.resize(glow, (w, h), interpolation=cv2.INTER_LINEAR))
+
+        # en-tête (aligné à gauche, sobre)
+        x = int(w * 0.06)
+        T.draw(frame, "GESTURA", (x, ui.u(44)), 14, ui.WHITE, "lt", bold=True, alpha=0.6)
+        T.draw(frame, "Arcade", (x, ui.u(64)), 46, ui.WHITE, "lt", bold=True)
+        cx_ = w - x
+        for chip in reversed(["Pointe une carte", "1 – 5", "Échap : retour"]):
+            spr = self._chip(chip)
+            ui.blit(frame, spr, (cx_ - spr[1].shape[1] / 2, ui.u(78) + spr[1].shape[0] / 2))
+            cx_ -= spr[1].shape[1] + ui.u(10)
+
+        # rangée de cartes
+        n = len(GAMES)
+        cw = int(w * 0.158)
+        ch = int(cw * 1.38)
+        gap = int(w * 0.022)
+        x0 = (w - (n * cw + (n - 1) * gap)) // 2
+        cy = int(h * 0.56)
         tips = [hd.pts[8] for hd in tracker.hands()]
         hovered = None
         rects = []
-        for i, (key, name, icon, desc, _) in enumerate(GAMES):
-            x = x0 + i * (cw + gap)
-            rects.append((x, y0, x + cw, y0 + ch))
+        for i in range(n):
+            cxi = x0 + i * (cw + gap) + cw // 2
+            rects.append((cxi, cy))
             for p in tips:
-                if x < p[0] < x + cw and y0 < p[1] < y0 + ch:
+                if abs(p[0] - cxi) < cw / 2 and abs(p[1] - cy) < ch / 2:
                     hovered = i
         if hovered is not None:
             self.sel = hovered
             if self.hover != hovered:
                 self.hover, self.hover_t = hovered, now
                 if self.audio is not None:
-                    self.audio.play(A.sfx_pop(1.2), 0.3)
+                    self.audio.play(A.sfx_pop(1.2), 0.25)
         else:
             self.hover = None
-        for i, (key, name, icon, desc, _) in enumerate(GAMES):
-            x, y, x1, y1 = rects[i]
-            cur = i == self.sel
-            lift = ui.u(14) if cur else 0
-            ui.panel(frame, x, y - lift, x1, y1 - lift, 0.65 if cur else 0.45, 22)
-            if cur:
-                cv2.rectangle(frame, (x + ui.u(20), y1 - lift - ui.u(6)), (x1 - ui.u(20), y1 - lift - ui.u(2)),
-                              ui.HUD_GREEN, -1)
-            bob = math.sin(now * 3 + i) * ui.u(6) if cur else 0
-            ui.blit(frame, icons.get(icon, ui.u(130)), ((x + x1) / 2, y + ui.u(90) - lift + bob))
-            T.draw(frame, f"{i + 1}. {name}", ((x + x1) / 2, y + ui.u(170) - lift), 24, ui.WHITE, "mt", bold=True)
-            T.draw(frame, desc, ((x + x1) / 2, y + ui.u(208) - lift), 14, ui.WHITE, "mt", alpha=0.75)
-            rec = self.records.get(key, 0)
-            T.draw(frame, f"record : {rec}" if rec else "pas encore de record", ((x + x1) / 2, y + ui.u(250) - lift),
-                   15, ui.HUD_GREEN if rec else ui.WHITE, "mt", alpha=0.85)
-            if cur and self.hover == i:
-                ui.arc(frame, ((x + x1) / 2, y + ui.u(90) - lift), ui.u(72), (now - self.hover_t) / 0.8, ui.GREEN, 5)
+        order = [i for i in range(n) if i != self.sel] + [self.sel]  # la carte choisie au premier plan
+        for i in order:
+            sel = i == self.sel
+            self.scales[i] += ((1.1 if sel else 0.94) - self.scales[i]) * (1 - math.exp(-12 * dt))
+            s = round(self.scales[i], 2)
+            spr, shd = self._scaled(i, cw, ch, s, sel)
+            nw, nh = spr[1].shape[1], spr[1].shape[0]
+            cxi, cyi = rects[i]
+            cyi = cyi - (ui.u(8) if sel else 0)
+            ui.blit(frame, shd, (cxi, cyi + ui.u(14)))  # ombre (halo coloré pour la carte choisie)
+            ui.blit(frame, spr, (cxi, cyi))
+            if sel and self.hover == i:  # barre de lancement dans la carte
+                prog = min(1.0, (now - self.hover_t) / DWELL)
+                bx0, bx1 = int(cxi - nw * 0.36), int(cxi + nw * 0.36)
+                by = int(cyi + nh / 2 - nh * 0.05)
+                cv2.line(frame, (bx0, by), (bx1, by), (255, 255, 255), ui.u(5), cv2.LINE_AA)
+                cv2.line(frame, (bx0, by), (bx1, by), (90, 90, 90), ui.u(3), cv2.LINE_AA)
+                cv2.line(frame, (bx0, by), (int(bx0 + (bx1 - bx0) * prog), by), (255, 255, 255), ui.u(5),
+                         cv2.LINE_AA)
+        # description du jeu sélectionné
+        desc = GAMES[self.sel][3]
+        T.draw(frame, desc, (w // 2, cy + ch * 0.62 + ui.u(30)), 20, ui.WHITE, "mt", alpha=0.85)
+        hint = "Garde ton index sur la carte pour jouer" if self.hover is None else "Lancement…"
+        T.draw(frame, hint, (w // 2, cy + ch * 0.62 + ui.u(62)), 15, ui.WHITE, "mt", alpha=0.55)
+        # curseur au bout du doigt
         for p in tips:
-            cv2.circle(frame, (int(p[0]), int(p[1])), ui.u(10), ui.WHITE, -1, cv2.LINE_AA)
-            cv2.circle(frame, (int(p[0]), int(p[1])), ui.u(16), ui.WHITE, ui.u(2), cv2.LINE_AA)
-        self.particles.update(dt)
-        self.particles.draw(frame)
-        if self.hover is not None and now - self.hover_t >= 0.8:
+            c = (int(p[0]), int(p[1]))
+            cv2.circle(frame, c, ui.u(18), (255, 255, 255), max(1, ui.u(2)), cv2.LINE_AA)
+            cv2.circle(frame, c, ui.u(7), (255, 255, 255), -1, cv2.LINE_AA)
+        if self.hover is not None and now - self.hover_t >= DWELL:
             self.hover = None
             if self.audio is not None:
                 self.audio.play(A.sfx_chime(), 0.4)
