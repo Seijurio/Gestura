@@ -1,0 +1,22 @@
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+
+# Modèles MediaPipe (téléchargés automatiquement par run.sh / scripts/get-models.sh)
+models/
+
+# Données personnelles — à ne JAMAIS publier
+# signature du visage (déverrouillage)
+profile.json
+# réglages, records des jeux, chemins perso
+settings.json
+# photos, vidéos, boomerangs
+captures/
+# effets personnels (uniquement sur ma machine)
+local_effects.py
+
+# macOS / éditeurs
+.DS_Store
+.vscode/
+.idea/
